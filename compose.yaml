@@ -19,8 +19,8 @@ services:
       ENVIRONMENT: local
       DOMAIN: host.docker.internal
       EVENT_DOMAIN: host.docker.internal
-      LOCAL_PORT: 3000
-      LOCAL_EVENT_PORT: 3004
+      LOCAL_PORT: 3004
+      LOCAL_EVENT_PORT: 3005
       PROTOCOL: http
       DISABLE_EVENTS: ${DISABLE_EVENTS:-false}
 
