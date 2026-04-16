@@ -15,7 +15,7 @@ A successful build results in a Docker container that is capable of running your
 The performance test suites are designed to be run from the CDP Portal.
 The CDP Platform runs test suites in much the same way it runs any other service, it takes a docker image and runs it as an ECS task, automatically provisioning infrastructure as required.
 
-## Local Testing with LocalStack
+## Local Testing
 
 The `fcp-audit-performance-test-suite` can be ran locally via Docker compose.
 
@@ -27,6 +27,46 @@ Once this is complete, you can trigger a local test run:
 ```
 
 Test reports are saved locally and can be viewed in `reports` directory.
+
+## Authentication
+
+The test suite supports optional Microsoft Entra (Azure AD) authentication using OAuth 2.0 client credentials flow. This allows testing of authenticated APIs without manual token management.
+
+### How It Works
+
+1. **Token Acquisition**: During the Setup Thread Group, a single access token is requested from Microsoft Entra (`login.microsoftonline.com`)
+2. **Token Sharing**: The token is extracted and stored in the `${access_token}` variable, shared across all test threads
+3. **Authorization Header**: When enabled, each request to the Messages API automatically includes `Authorization: Bearer ${access_token}`
+
+### Configuration
+
+Authentication is controlled via environment variables in the `.env` file:
+
+```env
+# Enable/disable authentication
+AUTH_ENABLED=true
+
+# Microsoft Entra credentials
+TENANT_ID=your-azure-tenant-id
+CLIENT_ID=your-app-client-id
+CLIENT_SECRET=your-app-secret
+```
+
+### Token Lifecycle
+
+- Tokens are acquired **once** during test setup
+- The token is shared across all threads
+- The token expires after 60 minutes, they remain valid for the complete test run
+
+### Disabling Authentication
+
+To test unauthenticated endpoints or run tests in environments without authentication:
+
+```env
+AUTH_ENABLED=false
+```
+
+When disabled, the test suite skips token acquisition and does not add Authorization headers to requests.
 
 ## Licence
 
