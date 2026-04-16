@@ -21,6 +21,11 @@ services:
       LOCAL_EVENT_PORT: 3005
       PROTOCOL: http
       DISABLE_EVENTS: ${DISABLE_EVENTS:-false}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      TENANT_ID: ${TENANT_ID}
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      SCOPE: ${CLIENT_ID}/.default
 
   floci:
     image: hectorvent/floci:latest
