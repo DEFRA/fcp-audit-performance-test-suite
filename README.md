@@ -68,6 +68,23 @@ AUTH_ENABLED=false
 
 When disabled, the test suite skips token acquisition and does not add Authorization headers to requests.
 
+## Synthetic CRN/SBI check
+
+A pre-commit hook and the pull request workflow use [fcp-sfd-core](https://github.com/DEFRA/fcp-sfd-core)'s `sfd-id-check` to block 10-digit (CRN) or 9-digit (SBI) numbers outside the synthetic ranges. Use synthetic-range values in test scenarios, properties and examples.
+
+The hook needs Node.js and npm. `.npmrc` sets `ignore-scripts=true`, so install the git hooks yourself once after `npm install`:
+
+```bash
+npm install
+npm run setup:husky
+```
+
+To run the check on staged files by hand:
+
+```bash
+npm run check:synthetic-ids
+```
+
 ## Licence
 
 THIS INFORMATION IS LICENSED UNDER THE CONDITIONS OF THE OPEN GOVERNMENT LICENCE found at:
