@@ -10,8 +10,8 @@
 
     <hashTree>
 
-      <!-- Setup Thread Group (pre-requisite) -->
-      <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="Pre-requisite Setup Thread Group" enabled="true">
+      <!-- Ingestion test (setUp thread group): runs to completion before the API read load starts -->
+      <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="Ingestion test" enabled="true">
         <intProp name="ThreadGroup.num_threads">1</intProp>
         <intProp name="ThreadGroup.ramp_time">1</intProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
@@ -22,28 +22,6 @@
         </elementProp>
       </SetupThreadGroup>
       <hashTree>
-        <IfController guiclass="IfControllerGui" testclass="IfController" testname="Run pre-requisite simulate messages API" enabled="true">
-          <!-- Run unless -Jdisable_events=true -->
-          <stringProp name="IfController.condition">${__groovy(!'true'.equalsIgnoreCase(props.get('disable_events')))}</stringProp>
-          <boolProp name="IfController.evaluateAll">false</boolProp>
-        </IfController>
-        <hashTree>
-          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Simulate Messages API" enabled="true">
-            <stringProp name="HTTPSampler.domain">${__P(event_domain, fcp-audit-publisher-stub.${__P(env)}.cdp-int.defra.cloud)}</stringProp>
-            <stringProp name="HTTPSampler.protocol">${__P(protocol, https)}</stringProp>
-            <stringProp name="HTTPSampler.port">${__P(event_port, 3005)}</stringProp>
-            <stringProp name="HTTPSampler.path">/api/v1/simulate/audit?repetitions=5000</stringProp>
-            <stringProp name="HTTPSampler.method">POST</stringProp>
-            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
-            <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
-            <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
-              <collectionProp name="Arguments.arguments"/>
-            </elementProp>
-          </HTTPSamplerProxy>
-          <hashTree/>
-        </hashTree>
-
         <!-- Get Microsoft Entra Token -->
         <IfController guiclass="IfControllerGui" testclass="IfController" testname="Get token if auth enabled" enabled="true">
           <stringProp name="IfController.condition">${__groovy('true'.equalsIgnoreCase(props.get('auth_enabled')))}</stringProp>
@@ -139,10 +117,259 @@ props.put(&quot;access_token&quot;, vars.get(&quot;access_token&quot;))</stringP
           <hashTree/>
         </hashTree>
         </hashTree>
+
+        <!-- Measure how quickly fcp-audit ingests audit messages: publish a known volume through the
+             publisher stub, then time how long until it is all readable from the audit API.
+             Skipped when -Jdisable_events=true. -->
+        <IfController guiclass="IfControllerGui" testclass="IfController" testname="Measure audit message ingestion" enabled="true">
+          <stringProp name="IfController.condition">${__groovy(!'true'.equalsIgnoreCase(props.get('disable_events')))}</stringProp>
+          <boolProp name="IfController.evaluateAll">false</boolProp>
+        </IfController>
+        <hashTree>
+          <!-- Audit total before publishing -->
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Audit summary (baseline)" enabled="true">
+            <stringProp name="HTTPSampler.domain">${__P(domain, fcp-audit.${__P(env)}.cdp-int.defra.cloud)}</stringProp>
+            <stringProp name="HTTPSampler.protocol">${__P(protocol, https)}</stringProp>
+            <stringProp name="HTTPSampler.port">${__P(port, 3004)}</stringProp>
+            <stringProp name="HTTPSampler.path">/api/v1/audit/summary</stringProp>
+            <stringProp name="HTTPSampler.method">GET</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+              <collectionProp name="Arguments.arguments"/>
+            </elementProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Authorization Header" enabled="true">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Authorization</stringProp>
+                  <stringProp name="Header.value">Bearer ${__P(access_token)}</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+            <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Audit summary response assertion" enabled="true">
+              <collectionProp name="Asserion.test_strings">
+                <stringProp name="49586">200</stringProp>
+              </collectionProp>
+              <stringProp name="Assertion.custom_message">Audit summary should return 200</stringProp>
+              <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
+              <boolProp name="Assertion.assume_success">false</boolProp>
+              <intProp name="Assertion.test_type">2</intProp>
+            </ResponseAssertion>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Calculate expected total" enabled="true">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="script">import groovy.json.JsonSlurper
+
+// fcp-audit publishes an audit event (application 'Audit Service') for each of its own API calls,
+// including these summary requests and the read load, so leave those out of the count
+long countPublishedEvents(def result) {
+    if (result.getResponseCode() != '200') {
+        return -1L
+    }
+    try {
+        def applications = new JsonSlurper().parseText(result.getResponseDataAsString()).data.summary.applications
+        return applications.findAll { it.application != 'Audit Service' }.sum(0L) { it.total as long }
+    } catch (Exception e) {
+        log.warn('Unable to read audit summary: ' + e.message)
+        return -1L
+    }
+}
+
+// Work out the audit total that marks the end of ingestion for the messages about to be published
+long baseline = countPublishedEvents(prev)
+vars.put('baseline_total', String.valueOf(baseline))
+
+long repetitions = (props.get('ingest_repetitions') ?: '5000') as long
+long perRepetition = (props.get('ingest_audit_events_per_repetition') ?: '2') as long
+long expectedEvents = repetitions * perRepetition
+
+vars.put('expected_events', String.valueOf(expectedEvents))
+vars.put('ingest_done', 'false')
+vars.put('ingest_error', '')
+
+if (baseline &lt; 0) {
+    // Without a baseline there is nothing to measure against, but still publish so the read load has data
+    vars.put('ingest_done', 'true')
+    vars.put('ingest_error', 'Could not read baseline audit total (HTTP ' + prev.getResponseCode() + ')')
+} else {
+    vars.put('expected_total', String.valueOf(baseline + expectedEvents))
+}
+
+log.info('Publishing ' + repetitions + ' repetitions, expecting ' + expectedEvents + ' audit events on top of baseline ' + baseline)</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+          </hashTree>
+
+          <!-- Timed from sending the simulate request until the expected events are readable from the audit API -->
+          <TransactionController guiclass="TransactionControllerGui" testclass="TransactionController" testname="Ingest audit messages" enabled="true">
+            <boolProp name="TransactionController.includeTimers">true</boolProp>
+            <boolProp name="TransactionController.parent">false</boolProp>
+          </TransactionController>
+          <hashTree>
+            <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Publish audit messages" enabled="true">
+              <stringProp name="HTTPSampler.domain">${__P(event_domain, fcp-audit-publisher-stub.${__P(env)}.cdp-int.defra.cloud)}</stringProp>
+              <stringProp name="HTTPSampler.protocol">${__P(protocol, https)}</stringProp>
+              <stringProp name="HTTPSampler.port">${__P(event_port, 3005)}</stringProp>
+              <stringProp name="HTTPSampler.path">/api/v1/simulate/audit?repetitions=${__P(ingest_repetitions,5000)}</stringProp>
+              <stringProp name="HTTPSampler.method">POST</stringProp>
+              <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+              <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+              <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+              <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+                <collectionProp name="Arguments.arguments"/>
+              </elementProp>
+            </HTTPSamplerProxy>
+            <hashTree>
+              <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Publish response assertion" enabled="true">
+                <collectionProp name="Asserion.test_strings">
+                  <stringProp name="49588">202</stringProp>
+                </collectionProp>
+                <stringProp name="Assertion.custom_message">Simulate Messages API should return 202</stringProp>
+                <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
+                <boolProp name="Assertion.assume_success">false</boolProp>
+                <intProp name="Assertion.test_type">2</intProp>
+              </ResponseAssertion>
+              <hashTree/>
+              <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Record ingestion start" enabled="true">
+                <stringProp name="scriptLanguage">groovy</stringProp>
+                <stringProp name="parameters"></stringProp>
+                <stringProp name="filename"></stringProp>
+                <stringProp name="cacheKey">true</stringProp>
+                <stringProp name="script">// Ingestion is timed from when the simulate request was sent
+vars.put('ingest_start', String.valueOf(prev.getStartTime()))
+
+// The stub responds 202 and publishes in the background, so anything else means no events are coming
+if (prev.getResponseCode() != '202' &amp;&amp; vars.get('ingest_done') != 'true') {
+    vars.put('ingest_done', 'true')
+    vars.put('ingest_error', 'Simulate request failed (HTTP ' + prev.getResponseCode() + ')')
+}</stringProp>
+              </JSR223PostProcessor>
+              <hashTree/>
+            </hashTree>
+
+            <WhileController guiclass="WhileControllerGui" testclass="WhileController" testname="Wait for messages to be ingested" enabled="true">
+              <stringProp name="WhileController.condition">${__groovy(vars.get('ingest_done') != 'true')}</stringProp>
+            </WhileController>
+            <hashTree>
+              <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Audit summary (poll)" enabled="true">
+                <stringProp name="HTTPSampler.domain">${__P(domain, fcp-audit.${__P(env)}.cdp-int.defra.cloud)}</stringProp>
+                <stringProp name="HTTPSampler.protocol">${__P(protocol, https)}</stringProp>
+                <stringProp name="HTTPSampler.port">${__P(port, 3004)}</stringProp>
+                <stringProp name="HTTPSampler.path">/api/v1/audit/summary</stringProp>
+                <stringProp name="HTTPSampler.method">GET</stringProp>
+                <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+                <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+                <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+                <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+                  <collectionProp name="Arguments.arguments"/>
+                </elementProp>
+              </HTTPSamplerProxy>
+              <hashTree>
+                <ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="Poll interval" enabled="true">
+                  <stringProp name="ConstantTimer.delay">${__P(ingest_poll_interval_ms,2000)}</stringProp>
+                </ConstantTimer>
+                <hashTree/>
+                <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Authorization Header" enabled="true">
+                  <collectionProp name="HeaderManager.headers">
+                    <elementProp name="" elementType="Header">
+                      <stringProp name="Header.name">Authorization</stringProp>
+                      <stringProp name="Header.value">Bearer ${__P(access_token)}</stringProp>
+                    </elementProp>
+                  </collectionProp>
+                </HeaderManager>
+                <hashTree/>
+                <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Audit summary response assertion" enabled="true">
+                  <collectionProp name="Asserion.test_strings">
+                    <stringProp name="49586">200</stringProp>
+                  </collectionProp>
+                  <stringProp name="Assertion.custom_message">Audit summary should return 200</stringProp>
+                  <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
+                  <boolProp name="Assertion.assume_success">false</boolProp>
+                  <intProp name="Assertion.test_type">2</intProp>
+                </ResponseAssertion>
+                <hashTree/>
+                <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Check ingestion progress" enabled="true">
+                  <stringProp name="scriptLanguage">groovy</stringProp>
+                  <stringProp name="parameters"></stringProp>
+                  <stringProp name="filename"></stringProp>
+                  <stringProp name="cacheKey">true</stringProp>
+                  <stringProp name="script">import groovy.json.JsonSlurper
+
+// fcp-audit publishes an audit event (application 'Audit Service') for each of its own API calls,
+// including these summary requests and the read load, so leave those out of the count
+long countPublishedEvents(def result) {
+    if (result.getResponseCode() != '200') {
+        return -1L
+    }
+    try {
+        def applications = new JsonSlurper().parseText(result.getResponseDataAsString()).data.summary.applications
+        return applications.findAll { it.application != 'Audit Service' }.sum(0L) { it.total as long }
+    } catch (Exception e) {
+        log.warn('Unable to read audit summary: ' + e.message)
+        return -1L
+    }
+}
+
+long current = countPublishedEvents(prev)
+vars.put('current_total', String.valueOf(current))
+long expected = vars.get('expected_total') as long
+long start = vars.get('ingest_start') as long
+long timeoutMs = ((props.get('ingest_timeout_seconds') ?: '600') as long) * 1000
+long elapsedMs = prev.getEndTime() - start
+
+if (current &gt;= expected) {
+    vars.put('ingest_done', 'true')
+    vars.put('ingest_end', String.valueOf(prev.getEndTime()))
+} else if (elapsedMs &gt;= timeoutMs) {
+    vars.put('ingest_done', 'true')
+    vars.put('ingest_error', 'Timed out after ' + (elapsedMs / 1000) + 's waiting for ' + expected + ' audit events (last total ' + current + ')')
+}</stringProp>
+                </JSR223PostProcessor>
+                <hashTree/>
+              </hashTree>
+            </hashTree>
+
+            <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Verify audit messages ingested" enabled="true">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="script">// Report the result of the ingestion phase. This sampler fails if ingestion did not complete.
+String error = vars.get('ingest_error')
+
+if (error) {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseCode('500')
+    SampleResult.setResponseMessage(error)
+    log.error('Ingestion test failed: ' + error)
+    return error
+}
+
+long events = (vars.get('current_total') as long) - (vars.get('baseline_total') as long)
+long durationMs = (vars.get('ingest_end') as long) - (vars.get('ingest_start') as long)
+double rate = durationMs &gt; 0 ? events * 1000d / durationMs : 0d
+String pollMs = props.get('ingest_poll_interval_ms') ?: '2000'
+String summary = String.format('Ingested %d audit events in %.1fs (%.1f events/s, accurate to the %sms poll interval)', events, durationMs / 1000d, rate, pollMs)
+
+SampleResult.setResponseCode('200')
+SampleResult.setResponseMessage(summary)
+log.info(summary)
+return summary</stringProp>
+            </JSR223Sampler>
+            <hashTree/>
+          </hashTree>
+        </hashTree>
       </hashTree>
 
-      <!-- Main Thread Group -->
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
+      <!-- API read load -->
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="API read load">
         <intProp name="ThreadGroup.num_threads">75</intProp>
         <intProp name="ThreadGroup.ramp_time">30</intProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>

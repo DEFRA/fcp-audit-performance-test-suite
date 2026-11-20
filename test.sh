@@ -16,7 +16,7 @@ docker compose up --build -d
 
 echo "Waiting for JMeter tests to complete..."
 # Wait for the development container to finish running tests
-timeout=900  # 15 minutes timeout for tests
+timeout=1500  # 25 minutes: up to 10 minutes for the ingestion test plus the API read load
 counter=0
 while [ $counter -lt $timeout ]; do
   # Check if container is still running (tests ongoing)
@@ -52,7 +52,7 @@ if [ -f "./reports/index.html" ]; then
   echo "✅ Performance test reports are ready!"
   echo "📊 View the report at: file://$(pwd)/reports/index.html"
   echo "📁 All report files are in: $(pwd)/reports/"
-  
+
   # List the available reports
   echo ""
   echo "Available report files:"
