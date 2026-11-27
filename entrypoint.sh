@@ -51,6 +51,10 @@ jmeter -n -t ${SCENARIOFILE} -e -l "${REPORTFILE}" -o ${JM_REPORTS} -j ${LOGFILE
 -Jingest_audit_events_per_repetition="${INGEST_AUDIT_EVENTS_PER_REPETITION:-2}" \
 -Jingest_timeout_seconds="${INGEST_TIMEOUT_SECONDS:-600}" \
 -Jingest_poll_interval_ms="${INGEST_POLL_INTERVAL_MS:-2000}" \
+-Jingest_publishers="${INGEST_PUBLISHERS:-10}" \
+-Japi_threads="${API_THREADS:-20}" \
+-Japi_ramp_up_seconds="${API_RAMP_UP_SECONDS:-30}" \
+-Japi_duration_seconds="${API_DURATION_SECONDS:-630}" \
 -Jauth_enabled="${AUTH_ENABLED:-false}" \
 -Jtenant_id="${TENANT_ID}" \
 -Jclient_id="${CLIENT_ID}" \

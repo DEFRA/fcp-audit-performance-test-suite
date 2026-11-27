@@ -23,7 +23,7 @@
       </SetupThreadGroup>
       <hashTree>
         <!-- Get Microsoft Entra Token -->
-        <IfController guiclass="IfControllerGui" testclass="IfController" testname="Get token if auth enabled" enabled="true">
+        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Get token if auth enabled" enabled="true">
           <stringProp name="IfController.condition">${__groovy('true'.equalsIgnoreCase(props.get('auth_enabled')))}</stringProp>
           <boolProp name="IfController.evaluateAll">false</boolProp>
         </IfController>
@@ -121,7 +121,7 @@ props.put(&quot;access_token&quot;, vars.get(&quot;access_token&quot;))</stringP
         <!-- Measure how quickly fcp-audit ingests audit messages: publish a known volume through the
              publisher stub, then time how long until it is all readable from the audit API.
              Skipped when -Jdisable_events=true. -->
-        <IfController guiclass="IfControllerGui" testclass="IfController" testname="Measure audit message ingestion" enabled="true">
+        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Measure audit message ingestion" enabled="true">
           <stringProp name="IfController.condition">${__groovy(!'true'.equalsIgnoreCase(props.get('disable_events')))}</stringProp>
           <boolProp name="IfController.evaluateAll">false</boolProp>
         </IfController>
@@ -190,6 +190,14 @@ long repetitions = (props.get('ingest_repetitions') ?: '5000') as long
 long perRepetition = (props.get('ingest_audit_events_per_repetition') ?: '2') as long
 long expectedEvents = repetitions * perRepetition
 
+// Split the repetitions across several simulate requests. The stub publishes each request in its own
+// background job, so the jobs run side by side and publish faster than a single request can
+long publishers = Math.max(1L, Math.min((props.get('ingest_publishers') ?: '10') as long, repetitions))
+vars.put('publish_requests', String.valueOf(publishers))
+vars.put('publish_base_repetitions', String.valueOf(repetitions.intdiv(publishers)))
+vars.put('publish_extra_repetitions', String.valueOf(repetitions % publishers))
+vars.put('publish_index', '0')
+
 vars.put('expected_events', String.valueOf(expectedEvents))
 vars.put('ingest_done', 'false')
 vars.put('ingest_error', '')
@@ -202,22 +210,30 @@ if (baseline &lt; 0) {
     vars.put('expected_total', String.valueOf(baseline + expectedEvents))
 }
 
-log.info('Publishing ' + repetitions + ' repetitions, expecting ' + expectedEvents + ' audit events on top of baseline ' + baseline)</stringProp>
+log.info('Publishing ' + repetitions + ' repetitions across ' + publishers + ' simulate requests, expecting ' + expectedEvents + ' audit events on top of baseline ' + baseline)</stringProp>
             </JSR223PostProcessor>
             <hashTree/>
           </hashTree>
 
-          <!-- Timed from sending the simulate request until the expected events are readable from the audit API -->
+          <!-- Timed from sending the first simulate request until the expected events are readable from the audit API -->
           <TransactionController guiclass="TransactionControllerGui" testclass="TransactionController" testname="Ingest audit messages" enabled="true">
             <boolProp name="TransactionController.includeTimers">true</boolProp>
             <boolProp name="TransactionController.parent">false</boolProp>
           </TransactionController>
           <hashTree>
+
+            <!-- One simulate request per publisher. Each returns 202 straight away, so they are all sent within
+                 moments of each other and the stub publishes them in parallel -->
+            <LoopController guiclass="LoopControlPanel" testclass="LoopController" testname="Start publishers" enabled="true">
+              <stringProp name="LoopController.loops">${publish_requests}</stringProp>
+              <boolProp name="LoopController.continue_forever">true</boolProp>
+            </LoopController>
+            <hashTree>
             <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Publish audit messages" enabled="true">
               <stringProp name="HTTPSampler.domain">${__P(event_domain, fcp-audit-publisher-stub.${__P(env)}.cdp-int.defra.cloud)}</stringProp>
               <stringProp name="HTTPSampler.protocol">${__P(protocol, https)}</stringProp>
               <stringProp name="HTTPSampler.port">${__P(event_port, 3005)}</stringProp>
-              <stringProp name="HTTPSampler.path">/api/v1/simulate/audit?repetitions=${__P(ingest_repetitions,5000)}</stringProp>
+              <stringProp name="HTTPSampler.path">/api/v1/simulate/audit?repetitions=${publish_repetitions}</stringProp>
               <stringProp name="HTTPSampler.method">POST</stringProp>
               <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
               <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
@@ -227,6 +243,18 @@ log.info('Publishing ' + repetitions + ' repetitions, expecting ' + expectedEven
               </elementProp>
             </HTTPSamplerProxy>
             <hashTree>
+              <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Set publisher repetitions" enabled="true">
+                <stringProp name="scriptLanguage">groovy</stringProp>
+                <stringProp name="parameters"></stringProp>
+                <stringProp name="filename"></stringProp>
+                <stringProp name="cacheKey">true</stringProp>
+                <stringProp name="script">// Share the repetitions evenly, giving one extra to the first few requests when they don't divide exactly
+int index = vars.get('publish_index') as int
+long repetitions = (vars.get('publish_base_repetitions') as long) + (index &lt; (vars.get('publish_extra_repetitions') as int) ? 1 : 0)
+vars.put('publish_repetitions', String.valueOf(repetitions))
+vars.put('publish_index', String.valueOf(index + 1))</stringProp>
+              </JSR223PreProcessor>
+              <hashTree/>
               <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Publish response assertion" enabled="true">
                 <collectionProp name="Asserion.test_strings">
                   <stringProp name="49588">202</stringProp>
@@ -242,8 +270,10 @@ log.info('Publishing ' + repetitions + ' repetitions, expecting ' + expectedEven
                 <stringProp name="parameters"></stringProp>
                 <stringProp name="filename"></stringProp>
                 <stringProp name="cacheKey">true</stringProp>
-                <stringProp name="script">// Ingestion is timed from when the simulate request was sent
-vars.put('ingest_start', String.valueOf(prev.getStartTime()))
+                <stringProp name="script">// Ingestion is timed from when the first simulate request was sent
+if (!vars.get('ingest_start')) {
+    vars.put('ingest_start', String.valueOf(prev.getStartTime()))
+}
 
 // The stub responds 202 and publishes in the background, so anything else means no events are coming
 if (prev.getResponseCode() != '202' &amp;&amp; vars.get('ingest_done') != 'true') {
@@ -252,6 +282,7 @@ if (prev.getResponseCode() != '202' &amp;&amp; vars.get('ingest_done') != 'true'
 }</stringProp>
               </JSR223PostProcessor>
               <hashTree/>
+            </hashTree>
             </hashTree>
 
             <WhileController guiclass="WhileControllerGui" testclass="WhileController" testname="Wait for messages to be ingested" enabled="true">
@@ -356,7 +387,7 @@ long events = (vars.get('current_total') as long) - (vars.get('baseline_total') 
 long durationMs = (vars.get('ingest_end') as long) - (vars.get('ingest_start') as long)
 double rate = durationMs &gt; 0 ? events * 1000d / durationMs : 0d
 String pollMs = props.get('ingest_poll_interval_ms') ?: '2000'
-String summary = String.format('Ingested %d audit events in %.1fs (%.1f events/s, accurate to the %sms poll interval)', events, durationMs / 1000d, rate, pollMs)
+String summary = String.format('Ingested %d audit events in %.1fs (%.1f events/s, %s publishers, accurate to the %sms poll interval)', events, durationMs / 1000d, rate, vars.get('publish_requests'), pollMs)
 
 SampleResult.setResponseCode('200')
 SampleResult.setResponseMessage(summary)
@@ -370,12 +401,12 @@ return summary</stringProp>
 
       <!-- API read load -->
       <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="API read load">
-        <intProp name="ThreadGroup.num_threads">75</intProp>
-        <intProp name="ThreadGroup.ramp_time">30</intProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(api_threads,20)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(api_ramp_up_seconds,30)}</stringProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <boolProp name="ThreadGroup.scheduler">true</boolProp>
-        <stringProp name="ThreadGroup.duration">630</stringProp>
+        <stringProp name="ThreadGroup.duration">${__P(api_duration_seconds,630)}</stringProp>
         <stringProp name="ThreadGroup.delay">0</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller">
           <stringProp name="LoopController.loops">-1</stringProp>
