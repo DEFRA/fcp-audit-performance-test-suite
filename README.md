@@ -48,7 +48,7 @@ publisher stub ──▶ SNS ──▶ SQS ──▶ fcp-audit consumer ──�
 A single thread:
 
 1. **Audit summary (baseline)**: reads the current audit total from `GET /api/v1/audit/summary`
-2. **Publish audit messages**: asks the stub to publish `INGEST_REPETITIONS` repetitions of its scenarios. The stub responds `202` straight away and publishes in the background
+2. **Publish audit messages**: asks the stub to publish `INGEST_REPETITIONS` repetitions of its scenarios, split evenly across `INGEST_PUBLISHERS` simulate requests. The stub responds `202` to each request straight away and publishes it in a background job, so the jobs run side by side
 3. **Audit summary (poll)**: polls the summary every `INGEST_POLL_INTERVAL_MS` until the total reaches the baseline plus `INGEST_REPETITIONS × INGEST_AUDIT_EVENTS_PER_REPETITION`, or `INGEST_TIMEOUT_SECONDS` passes
 4. **Verify audit messages ingested**: fails if ingestion did not complete. Its response message gives the number of messages ingested, the time taken and the ingestion rate in events per second. The message also appears in the JMeter log and the CSV report
 
@@ -56,7 +56,7 @@ In the HTML report, the **Ingest audit messages** row is the end-to-end ingestio
 
 When you read the results, keep in mind:
 
-- **The measurement is end to end.** It covers the stub's publishing as well as fcp-audit's consumption. The stub publishes one message at a time, so the result may be limited by the stub rather than fcp-audit. Watch the fcp-audit queue's `ApproximateNumberOfMessagesVisible` metric during the test. A growing backlog means fcp-audit is the limit; a queue that stays near empty means the stub is
+- **The measurement is end to end.** It covers the stub's publishing as well as fcp-audit's consumption. Each stub job publishes one message at a time, so with too few publishers the result is limited by the stub rather than fcp-audit. Watch the fcp-audit queue's `ApproximateNumberOfMessagesVisible` metric during the test. A growing backlog means fcp-audit is the limit; a queue that stays near empty means the stub is, so raise `INGEST_PUBLISHERS` until a backlog builds
 - **An idle consumer starts slowly.** When fcp-audit's queue has been empty, it backs off for up to 32 seconds between polls. For small volumes this start-up delay can dominate the result
 - **The poll interval limits precision.** The end time can be up to `INGEST_POLL_INTERVAL_MS` late
 - **The count leaves out fcp-audit's own API audit events.** fcp-audit publishes an audit event (application `Audit Service`) for each of its own API calls, so these are excluded. Anything else that publishes audit events during the test will make ingestion look faster than it is
@@ -65,7 +65,7 @@ The test is skipped when `DISABLE_EVENTS=true`.
 
 ### 2. API read load (main thread group)
 
-This starts only after the ingestion test has finished. 75 threads ramp up over 30 seconds and then run for 10 minutes, each repeatedly calling `GET /health` and `GET /api/v1/audit`.
+This starts only after the ingestion test has finished. `API_THREADS` threads (see table below for values) ramp up over `API_RAMP_UP_SECONDS` and run until `API_DURATION_SECONDS` have passed, each repeatedly calling `GET /health` and `GET /api/v1/audit` with no pause in between.
 
 The API load also puts fcp-audit under some ingestion load. Each `GET /api/v1/audit` call publishes an API audit event, which fcp-audit then ingests, so reads and writes happen together.
 
@@ -78,6 +78,15 @@ The API load also puts fcp-audit under some ingestion load. Each `GET /api/v1/au
 | `INGEST_AUDIT_EVENTS_PER_REPETITION` | `2` | Audit records stored per repetition. This must match the stub's scenarios: it publishes `event`, `auditEvent` and `socEvent`, and only the first two contain an `audit` section that fcp-audit stores |
 | `INGEST_TIMEOUT_SECONDS` | `600` | How long to wait for ingestion before failing the test |
 | `INGEST_POLL_INTERVAL_MS` | `2000` | How often to poll the audit summary |
+| `INGEST_PUBLISHERS` | `10` | Number of simulate requests the repetitions are split across. The stub publishes them in parallel, so raise this until messages are published faster than fcp-audit consumes them |
+
+### API read load configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `API_THREADS` | `20` | Concurrent threads calling the API |
+| `API_RAMP_UP_SECONDS` | `30` | Time taken to start all the threads |
+| `API_DURATION_SECONDS` | `630` | How long the read load runs, including the ramp-up |
 
 ## Authentication
 
